@@ -69,6 +69,37 @@ jobs:
 | `ssh_port` | SSH port number | ❌ | `22` |
 | `exclude_files` | Additional files to exclude (comma-separated) | ❌ | `` |
 
+## ✨ Pre-Deploy Commands
+
+- **Multiple Command Support:** Run multiple commands before deployment
+- **Flexible Syntax:** Support both newline-separated and semicolon-separated commands
+- **Timeout Protection:** Each command has configurable timeout (default 300 seconds)
+- **Working Directory:** Specify where commands should run (default: repo root)
+- **Error Handling:** Deployment stops if any command fails
+
+### 🔧 Pre-Deploy Command's Input Parameters:
+
+`pre_deploy_commands`: Commands to run before deployment
+`command_timeout`: Timeout for each command in seconds
+`working_directory`: Directory to run commands in
+
+
+## ✨ Post-Deploy Command's Input Parameters:
+
+- **Optional Execution:** Run commands after successful deployment
+- **Flexible Syntax:** Same multi-format support as pre-deploy (newline/semicolon)
+- **Separate Timeout:** Independent timeout configuration for post-deploy commands
+- **Separate Working Directory:** Can run post-deploy commands in different directory
+- **Graceful Failure Handling:** Post-deploy failures don't fail the entire deployment
+
+### 🔧 Post-Deploy Command's Input Parameters:
+
+`post_deploy_commands`: Commands to run before deployment
+`post_deploy_timeout`: Timeout for each command in seconds
+`post_deploy_working_directory`: Directory to run commands in
+
+
+
 ## 📝 Usage Examples
 
 ### Basic Usage
@@ -135,16 +166,7 @@ jobs:
 4. **Cleanup**: Removes files that were deleted from repository
 5. **Tracking**: Updates remote tracking file with current commit hash
 
-## 📂 File Structure
 
-```
-your-action-repo/
-├── action.yml          # Action definition
-├── README.md          # Documentation
-└── .github/
-    └── workflows/
-        └── test.yml   # Test workflow
-```
 
 
 ## 🔐 Security Best Practices
