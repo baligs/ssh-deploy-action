@@ -63,10 +63,72 @@ runs:
     - name: Setup SSH
       shell: bash
       run: |
+        set -e
+        echo "Setting up SSH connection..."
+        
+        # Create SSH directory
         mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        
+        # Write private key
         echo "${{ inputs.private_key }}" > ~/.ssh/id_rsa
+        
+        # Fix potential line ending issues
+        sed -i 's/\r$//' ~/.ssh/id_rsa
+        
+        # Ensure key has proper format
+        if ! grep -q "BEGIN.*PRIVATE KEY" ~/.ssh/id_rsa; then
+          echo "❌ Error: Private key does not appear to be in correct format"
+          echo "Make sure your private key includes the full header and footer lines"
+          exit 1
+        fi
+        
+        if ! grep -q "END.*PRIVATE KEY" ~/.ssh/id_rsa; then
+          echo "❌ Error: Private key appears to be incomplete"
+          echo "Make sure your private key includes the full header and footer lines"
+          exit 1
+        fi
+        
+        # Set proper permissions
         chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -p ${{ inputs.ssh_port }} -H ${{ inputs.server_ip }} >> ~/.ssh/known_hosts
+        
+        # Validate key format
+        echo "Validating SSH key format..."
+        if ! ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub 2>/dev/null; then
+          echo "❌ Error: SSH private key is invalid or corrupted"
+          echo "Please check your private key format and ensure it's not encrypted with a passphrase"
+          exit 1
+        fi
+        
+        echo "✅ SSH key validation successful"
+        
+        # Create SSH config for better connection handling
+        cat > ~/.ssh/config << EOF
+        Host deploy_target
+          HostName ${{ inputs.server_ip }}
+          User ${{ inputs.username }}
+          Port ${{ inputs.ssh_port }}
+          IdentityFile ~/.ssh/id_rsa
+          StrictHostKeyChecking no
+          UserKnownHostsFile /dev/null
+          ConnectTimeout 30
+          ServerAliveInterval 10
+          ServerAliveCountMax 3
+        EOF
+        
+        # Test SSH connection
+        echo "Testing SSH connection..."
+        if ssh deploy_target "echo 'SSH connection test successful'" 2>/dev/null; then
+          echo "✅ SSH connection test passed"
+        else
+          echo "❌ SSH connection failed. Please check:"
+          echo "  - Server IP: ${{ inputs.server_ip }}"
+          echo "  - Username: ${{ inputs.username }}"
+          echo "  - SSH Port: ${{ inputs.ssh_port }}"
+          echo "  - Make sure the public key is installed on the server"
+          echo "  - Make sure SSH key authentication is enabled on the server"
+          exit 1
+        fi
         
     - name: Install dependencies
       shell: bash
@@ -77,6 +139,7 @@ runs:
     - name: Setup deployment tracking
       shell: bash
       run: |
+        set -e
         echo "Setting up deployment tracking..."
         
         # Create deployment directory
@@ -85,15 +148,13 @@ runs:
         # Get current commit hash
         CURRENT_COMMIT=$(git rev-parse HEAD)
         echo "CURRENT_COMMIT=$CURRENT_COMMIT" >> $GITHUB_ENV
+        echo "Current commit: $CURRENT_COMMIT"
         
         # Try to get last deployed commit from remote
         LAST_COMMIT=""
-        if ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-           ${{ inputs.username }}@${{ inputs.server_ip }} \
-           "test -f ${{ inputs.remote_path }}/.last-deploy-commit"; then
-          LAST_COMMIT=$(ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-                       ${{ inputs.username }}@${{ inputs.server_ip }} \
-                       "cat ${{ inputs.remote_path }}/.last-deploy-commit")
+        echo "Checking for previous deployment..."
+        if ssh deploy_target "test -f ${{ inputs.remote_path }}/.last-deploy-commit" 2>/dev/null; then
+          LAST_COMMIT=$(ssh deploy_target "cat ${{ inputs.remote_path }}/.last-deploy-commit" 2>/dev/null || echo "")
           echo "Last deployed commit: $LAST_COMMIT"
         else
           echo "No previous deployment found, will deploy all files"
@@ -144,6 +205,7 @@ runs:
     - name: Generate file list
       shell: bash
       run: |
+        set -e
         echo "Generating list of files to deploy..."
         
         cd ${{ inputs.local_path }}
@@ -214,14 +276,15 @@ runs:
     - name: Create remote directory
       shell: bash
       run: |
+        set -e
         echo "Ensuring remote directory exists..."
-        ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-            ${{ inputs.username }}@${{ inputs.server_ip }} \
-            "mkdir -p ${{ inputs.remote_path }}"
+        ssh deploy_target "mkdir -p ${{ inputs.remote_path }}"
+        echo "✅ Remote directory ready"
             
     - name: Deploy changed files
       shell: bash
       run: |
+        set -e
         if [ "$CHANGED_COUNT" -gt 0 ]; then
           echo "Deploying $CHANGED_COUNT changed files..."
           
@@ -231,14 +294,10 @@ runs:
           tar -czf .deploy-action/deploy.tar.gz -T .deploy-action/changed-files.txt
           
           # Copy tar to remote
-          scp -i ~/.ssh/id_rsa -P ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-              .deploy-action/deploy.tar.gz \
-              ${{ inputs.username }}@${{ inputs.server_ip }}:${{ inputs.remote_path }}/
+          scp .deploy-action/deploy.tar.gz deploy_target:${{ inputs.remote_path }}/
           
           # Extract on remote
-          ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-              ${{ inputs.username }}@${{ inputs.server_ip }} \
-              "cd ${{ inputs.remote_path }} && tar -xzf deploy.tar.gz && rm deploy.tar.gz"
+          ssh deploy_target "cd ${{ inputs.remote_path }} && tar -xzf deploy.tar.gz && rm deploy.tar.gz"
               
           echo "✅ Successfully deployed $CHANGED_COUNT files"
         else
@@ -248,6 +307,7 @@ runs:
     - name: Remove deleted files
       shell: bash
       run: |
+        set -e
         if [ "$DELETED_COUNT" -gt 0 ]; then
           echo "Removing $DELETED_COUNT deleted files..."
           
@@ -257,9 +317,7 @@ runs:
           while IFS= read -r file; do
             if [ -n "$file" ]; then
               echo "Removing: $file"
-              ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-                  ${{ inputs.username }}@${{ inputs.server_ip }} \
-                  "rm -f ${{ inputs.remote_path }}/$file"
+              ssh deploy_target "rm -f ${{ inputs.remote_path }}/$file"
             fi
           done < .deploy-action/deleted-files.txt
           
@@ -271,12 +329,11 @@ runs:
     - name: Update deployment tracking
       shell: bash
       run: |
+        set -e
         echo "Updating deployment tracking..."
         
         # Save current commit hash on remote
-        ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-            ${{ inputs.username }}@${{ inputs.server_ip }} \
-            "echo '$CURRENT_COMMIT' > ${{ inputs.remote_path }}/.last-deploy-commit"
+        ssh deploy_target "echo '$CURRENT_COMMIT' > ${{ inputs.remote_path }}/.last-deploy-commit"
             
         echo "✅ Deployment completed successfully!"
         echo "📊 Deployed: $CHANGED_COUNT files"
@@ -329,5 +386,5 @@ runs:
       shell: bash
       if: always()
       run: |
-        rm -rf ~/.ssh/id_rsa
+        rm -rf ~/.ssh/id_rsa ~/.ssh/id_rsa.pub ~/.ssh/config
         rm -rf .deploy-action
