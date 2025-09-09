@@ -148,6 +148,9 @@ runs:
         
         cd ${{ inputs.local_path }}
         
+        # Ensure .deploy-action directory exists
+        mkdir -p .deploy-action
+        
         # Create .deployignore from .gitignore if it exists
         if [ -f .gitignore ]; then
           cp .gitignore .deploy-action/.deployignore
