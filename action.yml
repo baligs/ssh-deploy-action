@@ -1,11 +1,9 @@
 name: 'Smart SSH Deploy Action'
 description: 'Deploy only changed files to remote server via SSH with .gitignore support'
-author: 'Baligs <https://github.com/baligs>'
-
+author: 'Baligs'
 branding:
   icon: 'upload-cloud'
   color: 'blue'
-
 inputs:
   server_ip:
     description: 'Server IP address'
@@ -35,7 +33,30 @@ inputs:
     description: 'Additional files to exclude (comma-separated)'
     required: false
     default: ''
-
+  pre_deploy_commands:
+    description: 'Commands to run before deployment (newline or semicolon separated)'
+    required: false
+    default: ''
+  post_deploy_commands:
+    description: 'Commands to run after deployment (newline or semicolon separated)'
+    required: false
+    default: ''
+  working_directory:
+    description: 'Working directory for pre-deploy commands'
+    required: false
+    default: '.'
+  post_deploy_working_directory:
+    description: 'Working directory for post-deploy commands'
+    required: false
+    default: '.'
+  command_timeout:
+    description: 'Timeout for pre-deploy commands (seconds)'
+    required: false
+    default: '300'
+  post_deploy_timeout:
+    description: 'Timeout for post-deploy commands (seconds)'
+    required: false
+    default: '300'
 runs:
   using: 'composite'
   steps:
@@ -91,7 +112,34 @@ runs:
           echo "Working directory: $(pwd)"
           
           # Parse commands (support both newline and semicolon separation)
-          COMMANDS=$(echo "${{ inputs.pre_deploy_commands }}" | tr ';' '\n' | grep -v '^[[:space:]]*
+          COMMANDS=$(echo "${{ inputs.pre_deploy_commands }}" | tr ';' '\n' | grep -v '^[[:space:]]*$')
+          
+          # Execute each command
+          echo "$COMMANDS" | while IFS= read -r cmd; do
+            if [ -n "$cmd" ]; then
+              echo "▶️ Executing: $cmd"
+              
+              # Run command with timeout
+              if timeout ${{ inputs.command_timeout }} bash -c "$cmd"; then
+                echo "✅ Command completed successfully"
+              else
+                exit_code=$?
+                if [ $exit_code -eq 124 ]; then
+                  echo "❌ Command timed out after ${{ inputs.command_timeout }} seconds"
+                  exit 1
+                else
+                  echo "❌ Command failed with exit code: $exit_code"
+                  exit $exit_code
+                fi
+              fi
+              echo ""
+            fi
+          done
+          
+          echo "✅ All pre-deploy commands completed successfully"
+        else
+          echo "No pre-deploy commands specified"
+        fi
         
     - name: Generate file list
       shell: bash
@@ -243,187 +291,7 @@ runs:
           echo "Working directory: $(pwd)"
           
           # Parse commands (support both newline and semicolon separation)
-          COMMANDS=$(echo "${{ inputs.post_deploy_commands }}" | tr ';' '\n' | grep -v '^[[:space:]]*
-        
-    - name: Cleanup
-      shell: bash
-      if: always()
-      run: |
-        rm -rf ~/.ssh/id_rsa
-        rm -rf .deploy-action)
-          
-          # Execute each command
-          echo "$COMMANDS" | while IFS= read -r cmd; do
-            if [ -n "$cmd" ]; then
-              echo "▶️ Executing: $cmd"
-              
-              # Run command with timeout
-              if timeout ${{ inputs.command_timeout }} bash -c "$cmd"; then
-                echo "✅ Command completed successfully"
-              else
-                exit_code=$?
-                if [ $exit_code -eq 124 ]; then
-                  echo "❌ Command timed out after ${{ inputs.command_timeout }} seconds"
-                  exit 1
-                else
-                  echo "❌ Command failed with exit code: $exit_code"
-                  exit $exit_code
-                fi
-              fi
-              echo ""
-            fi
-          done
-          
-          echo "✅ All pre-deploy commands completed successfully"
-        else
-          echo "No pre-deploy commands specified"
-        fi
-        
-    - name: Generate file list
-      shell: bash
-      run: |
-        echo "Generating list of files to deploy..."
-        
-        cd ${{ inputs.local_path }}
-        
-        # Create .deployignore from .gitignore if it exists
-        if [ -f .gitignore ]; then
-          cp .gitignore .deploy-action/.deployignore
-        else
-          touch .deploy-action/.deployignore
-        fi
-        
-        # Add additional excludes
-        echo ".git/" >> .deploy-action/.deployignore
-        echo ".github/" >> .deploy-action/.deployignore
-        echo ".deploy-action/" >> .deploy-action/.deployignore
-        echo ".last-deploy-commit" >> .deploy-action/.deployignore
-        
-        # Add user-specified excludes
-        if [ -n "${{ inputs.exclude_files }}" ]; then
-          IFS=',' read -ra EXCLUDES <<< "${{ inputs.exclude_files }}"
-          for exclude in "${EXCLUDES[@]}"; do
-            echo "$exclude" >> .deploy-action/.deployignore
-          done
-        fi
-        
-        # Generate list of changed files
-        if [ -n "$LAST_COMMIT" ] && [ "$LAST_COMMIT" != "$CURRENT_COMMIT" ]; then
-          echo "Getting changed files between $LAST_COMMIT and $CURRENT_COMMIT"
-          
-          # Get changed, added, and modified files
-          git diff --name-only --diff-filter=ACM $LAST_COMMIT $CURRENT_COMMIT > .deploy-action/changed-files.txt
-          
-          # Get deleted files
-          git diff --name-only --diff-filter=D $LAST_COMMIT $CURRENT_COMMIT > .deploy-action/deleted-files.txt
-          
-          echo "Changed files:"
-          cat .deploy-action/changed-files.txt
-          
-          echo "Deleted files:"
-          cat .deploy-action/deleted-files.txt
-          
-        else
-          echo "First deployment or same commit, deploying all files"
-          # Find all files, excluding ignored ones
-          find . -type f | grep -v -f .deploy-action/.deployignore > .deploy-action/changed-files.txt 2>/dev/null || find . -type f > .deploy-action/changed-files.txt
-          touch .deploy-action/deleted-files.txt
-        fi
-        
-        # Filter changed files through .deployignore
-        if [ -s .deploy-action/changed-files.txt ]; then
-          grep -v -f .deploy-action/.deployignore .deploy-action/changed-files.txt > .deploy-action/filtered-files.txt 2>/dev/null || touch .deploy-action/filtered-files.txt
-          mv .deploy-action/filtered-files.txt .deploy-action/changed-files.txt
-        fi
-        
-        echo "Files to deploy:"
-        cat .deploy-action/changed-files.txt
-        
-        # Count files
-        CHANGED_COUNT=$(wc -l < .deploy-action/changed-files.txt)
-        DELETED_COUNT=$(wc -l < .deploy-action/deleted-files.txt)
-        
-        echo "CHANGED_COUNT=$CHANGED_COUNT" >> $GITHUB_ENV
-        echo "DELETED_COUNT=$DELETED_COUNT" >> $GITHUB_ENV
-        
-    - name: Create remote directory
-      shell: bash
-      run: |
-        echo "Ensuring remote directory exists..."
-        ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-            ${{ inputs.username }}@${{ inputs.server_ip }} \
-            "mkdir -p ${{ inputs.remote_path }}"
-            
-    - name: Deploy changed files
-      shell: bash
-      run: |
-        if [ "$CHANGED_COUNT" -gt 0 ]; then
-          echo "Deploying $CHANGED_COUNT changed files..."
-          
-          cd ${{ inputs.local_path }}
-          
-          # Create tar of changed files
-          tar -czf .deploy-action/deploy.tar.gz -T .deploy-action/changed-files.txt
-          
-          # Copy tar to remote
-          scp -i ~/.ssh/id_rsa -P ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-              .deploy-action/deploy.tar.gz \
-              ${{ inputs.username }}@${{ inputs.server_ip }}:${{ inputs.remote_path }}/
-          
-          # Extract on remote
-          ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-              ${{ inputs.username }}@${{ inputs.server_ip }} \
-              "cd ${{ inputs.remote_path }} && tar -xzf deploy.tar.gz && rm deploy.tar.gz"
-              
-          echo "✅ Successfully deployed $CHANGED_COUNT files"
-        else
-          echo "No files to deploy"
-        fi
-        
-    - name: Remove deleted files
-      shell: bash
-      run: |
-        if [ "$DELETED_COUNT" -gt 0 ]; then
-          echo "Removing $DELETED_COUNT deleted files..."
-          
-          cd ${{ inputs.local_path }}
-          
-          # Remove deleted files from remote
-          while IFS= read -r file; do
-            if [ -n "$file" ]; then
-              echo "Removing: $file"
-              ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-                  ${{ inputs.username }}@${{ inputs.server_ip }} \
-                  "rm -f ${{ inputs.remote_path }}/$file"
-            fi
-          done < .deploy-action/deleted-files.txt
-          
-          echo "✅ Successfully removed $DELETED_COUNT files"
-        else
-          echo "No files to remove"
-        fi
-        
-    - name: Update deployment tracking
-      shell: bash
-      run: |
-        echo "Updating deployment tracking..."
-        
-        # Save current commit hash on remote
-        ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-            ${{ inputs.username }}@${{ inputs.server_ip }} \
-            "echo '$CURRENT_COMMIT' > ${{ inputs.remote_path }}/.last-deploy-commit"
-            
-        echo "✅ Deployment completed successfully!"
-        echo "📊 Deployed: $CHANGED_COUNT files"
-        echo "🗑️ Removed: $DELETED_COUNT files"
-        echo "🔗 Commit: $CURRENT_COMMIT"
-        
-    - name: Cleanup
-      shell: bash
-      if: always()
-      run: |
-        rm -rf ~/.ssh/id_rsa
-        rm -rf .deploy-action)
+          COMMANDS=$(echo "${{ inputs.post_deploy_commands }}" | tr ';' '\n' | grep -v '^[[:space:]]*$')
           
           # Execute each command
           echo "$COMMANDS" | while IFS= read -r cmd; do
@@ -453,179 +321,6 @@ runs:
         else
           echo "No post-deploy commands specified"
         fi
-        
-    - name: Cleanup
-      shell: bash
-      if: always()
-      run: |
-        rm -rf ~/.ssh/id_rsa
-        rm -rf .deploy-action)
-          
-          # Execute each command
-          echo "$COMMANDS" | while IFS= read -r cmd; do
-            if [ -n "$cmd" ]; then
-              echo "▶️ Executing: $cmd"
-              
-              # Run command with timeout
-              if timeout ${{ inputs.command_timeout }} bash -c "$cmd"; then
-                echo "✅ Command completed successfully"
-              else
-                exit_code=$?
-                if [ $exit_code -eq 124 ]; then
-                  echo "❌ Command timed out after ${{ inputs.command_timeout }} seconds"
-                  exit 1
-                else
-                  echo "❌ Command failed with exit code: $exit_code"
-                  exit $exit_code
-                fi
-              fi
-              echo ""
-            fi
-          done
-          
-          echo "✅ All pre-deploy commands completed successfully"
-        else
-          echo "No pre-deploy commands specified"
-        fi
-        
-    - name: Generate file list
-      shell: bash
-      run: |
-        echo "Generating list of files to deploy..."
-        
-        cd ${{ inputs.local_path }}
-        
-        # Create .deployignore from .gitignore if it exists
-        if [ -f .gitignore ]; then
-          cp .gitignore .deploy-action/.deployignore
-        else
-          touch .deploy-action/.deployignore
-        fi
-        
-        # Add additional excludes
-        echo ".git/" >> .deploy-action/.deployignore
-        echo ".github/" >> .deploy-action/.deployignore
-        echo ".deploy-action/" >> .deploy-action/.deployignore
-        echo ".last-deploy-commit" >> .deploy-action/.deployignore
-        
-        # Add user-specified excludes
-        if [ -n "${{ inputs.exclude_files }}" ]; then
-          IFS=',' read -ra EXCLUDES <<< "${{ inputs.exclude_files }}"
-          for exclude in "${EXCLUDES[@]}"; do
-            echo "$exclude" >> .deploy-action/.deployignore
-          done
-        fi
-        
-        # Generate list of changed files
-        if [ -n "$LAST_COMMIT" ] && [ "$LAST_COMMIT" != "$CURRENT_COMMIT" ]; then
-          echo "Getting changed files between $LAST_COMMIT and $CURRENT_COMMIT"
-          
-          # Get changed, added, and modified files
-          git diff --name-only --diff-filter=ACM $LAST_COMMIT $CURRENT_COMMIT > .deploy-action/changed-files.txt
-          
-          # Get deleted files
-          git diff --name-only --diff-filter=D $LAST_COMMIT $CURRENT_COMMIT > .deploy-action/deleted-files.txt
-          
-          echo "Changed files:"
-          cat .deploy-action/changed-files.txt
-          
-          echo "Deleted files:"
-          cat .deploy-action/deleted-files.txt
-          
-        else
-          echo "First deployment or same commit, deploying all files"
-          # Find all files, excluding ignored ones
-          find . -type f | grep -v -f .deploy-action/.deployignore > .deploy-action/changed-files.txt 2>/dev/null || find . -type f > .deploy-action/changed-files.txt
-          touch .deploy-action/deleted-files.txt
-        fi
-        
-        # Filter changed files through .deployignore
-        if [ -s .deploy-action/changed-files.txt ]; then
-          grep -v -f .deploy-action/.deployignore .deploy-action/changed-files.txt > .deploy-action/filtered-files.txt 2>/dev/null || touch .deploy-action/filtered-files.txt
-          mv .deploy-action/filtered-files.txt .deploy-action/changed-files.txt
-        fi
-        
-        echo "Files to deploy:"
-        cat .deploy-action/changed-files.txt
-        
-        # Count files
-        CHANGED_COUNT=$(wc -l < .deploy-action/changed-files.txt)
-        DELETED_COUNT=$(wc -l < .deploy-action/deleted-files.txt)
-        
-        echo "CHANGED_COUNT=$CHANGED_COUNT" >> $GITHUB_ENV
-        echo "DELETED_COUNT=$DELETED_COUNT" >> $GITHUB_ENV
-        
-    - name: Create remote directory
-      shell: bash
-      run: |
-        echo "Ensuring remote directory exists..."
-        ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-            ${{ inputs.username }}@${{ inputs.server_ip }} \
-            "mkdir -p ${{ inputs.remote_path }}"
-            
-    - name: Deploy changed files
-      shell: bash
-      run: |
-        if [ "$CHANGED_COUNT" -gt 0 ]; then
-          echo "Deploying $CHANGED_COUNT changed files..."
-          
-          cd ${{ inputs.local_path }}
-          
-          # Create tar of changed files
-          tar -czf .deploy-action/deploy.tar.gz -T .deploy-action/changed-files.txt
-          
-          # Copy tar to remote
-          scp -i ~/.ssh/id_rsa -P ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-              .deploy-action/deploy.tar.gz \
-              ${{ inputs.username }}@${{ inputs.server_ip }}:${{ inputs.remote_path }}/
-          
-          # Extract on remote
-          ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-              ${{ inputs.username }}@${{ inputs.server_ip }} \
-              "cd ${{ inputs.remote_path }} && tar -xzf deploy.tar.gz && rm deploy.tar.gz"
-              
-          echo "✅ Successfully deployed $CHANGED_COUNT files"
-        else
-          echo "No files to deploy"
-        fi
-        
-    - name: Remove deleted files
-      shell: bash
-      run: |
-        if [ "$DELETED_COUNT" -gt 0 ]; then
-          echo "Removing $DELETED_COUNT deleted files..."
-          
-          cd ${{ inputs.local_path }}
-          
-          # Remove deleted files from remote
-          while IFS= read -r file; do
-            if [ -n "$file" ]; then
-              echo "Removing: $file"
-              ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-                  ${{ inputs.username }}@${{ inputs.server_ip }} \
-                  "rm -f ${{ inputs.remote_path }}/$file"
-            fi
-          done < .deploy-action/deleted-files.txt
-          
-          echo "✅ Successfully removed $DELETED_COUNT files"
-        else
-          echo "No files to remove"
-        fi
-        
-    - name: Update deployment tracking
-      shell: bash
-      run: |
-        echo "Updating deployment tracking..."
-        
-        # Save current commit hash on remote
-        ssh -i ~/.ssh/id_rsa -p ${{ inputs.ssh_port }} -o StrictHostKeyChecking=no \
-            ${{ inputs.username }}@${{ inputs.server_ip }} \
-            "echo '$CURRENT_COMMIT' > ${{ inputs.remote_path }}/.last-deploy-commit"
-            
-        echo "✅ Deployment completed successfully!"
-        echo "📊 Deployed: $CHANGED_COUNT files"
-        echo "🗑️ Removed: $DELETED_COUNT files"
-        echo "🔗 Commit: $CURRENT_COMMIT"
         
     - name: Cleanup
       shell: bash
